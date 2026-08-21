@@ -41,11 +41,23 @@ def train(
     else:
         print(f"[DATA CHECK OK] Ti le lop duong: {pos_ratio:.1%} (tham chieu: {BASELINE_POS_RATIO:.1%})")
 
-    # Dam bao MLflow tracking URI duoc thiet lap
-    if not os.environ.get("MLFLOW_TRACKING_URI"):
-        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+    # Dam bao MLflow tracking va DagsHub credentials duoc thiet lap
+    if os.environ.get("DAGSHUB_USERNAME") and not os.environ.get("MLFLOW_TRACKING_USERNAME"):
+        os.environ["MLFLOW_TRACKING_USERNAME"] = os.environ["DAGSHUB_USERNAME"]
+    if os.environ.get("DAGSHUB_TOKEN") and not os.environ.get("MLFLOW_TRACKING_PASSWORD"):
+        os.environ["MLFLOW_TRACKING_PASSWORD"] = os.environ["DAGSHUB_TOKEN"]
 
-    with mlflow.start_run():
+    # Thu ket noi MLflow (ho tro fallback an toan ve SQLite neu remote loi xac thuc)
+    try:
+        if not os.environ.get("MLFLOW_TRACKING_URI"):
+            mlflow.set_tracking_uri("sqlite:///mlflow.db")
+        active_run = mlflow.start_run()
+    except Exception as e:
+        print(f"[MLFLOW NOTE] Ket noi remote MLflow that bai ({e}). Chuyen ve SQLite cuc bo.")
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+        active_run = mlflow.start_run()
+
+    with active_run:
         # Log params va Data Drift metric
         mlflow.log_params(params)
         mlflow.log_metric("pos_ratio", pos_ratio)
