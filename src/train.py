@@ -41,6 +41,9 @@ def train(
     X_eval = df_eval.drop(columns=["target"])
     y_eval = df_eval["target"]
 
+    if not os.environ.get("MLFLOW_TRACKING_URI"):
+        mlflow.set_tracking_uri("sqlite:///mlflow.db")
+
     with mlflow.start_run():
         # TODO 3: Ghi nhan cac sieu tham so
         mlflow.log_params(params)
