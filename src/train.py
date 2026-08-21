@@ -1,17 +1,16 @@
 import mlflow
 import mlflow.sklearn
 import pandas as pd
+import numpy as np
 import yaml
 import json
 import joblib
 import os
 from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.metrics import accuracy_score, f1_score
+from sklearn.metrics import accuracy_score, f1_score, classification_report, confusion_matrix
 
-# Nguong chat luong cua lab nay la f1_score, KHONG phai accuracy.
-# Ly do: bo du lieu Adult co ty le lop 75/25. Mot mo hinh doan bua
-# "thu nhap thap" cho moi mau da dat accuracy 0.75 ma khong hoc duoc gi.
 F1_THRESHOLD = 0.65
+BASELINE_POS_RATIO = 0.248  # Ti le tham chieu lop duong 24.8%
 
 
 def train(
@@ -20,62 +19,105 @@ def train(
     eval_path: str = "data/holdout.csv",
 ) -> float:
     """
-    Huan luyen mo hinh va ghi nhan ket qua vao MLflow.
-
-    Tham so:
-        params     : dict chua cac sieu tham so cho GradientBoostingClassifier.
-        data_path  : duong dan den file du lieu huan luyen.
-        eval_path  : duong dan den file du lieu danh gia (holdout).
-
-    Tra ve:
-        f1 (float): diem F1 cua lop duong (thu nhap > 50K) tren tap holdout.
+    Huan luyen mo hinh, kiem tra lech lac du lieu (Bonus 5),
+    quet nguong quyet dinh toi uu (Bonus 2), tao bao cao chi tiet (Bonus 3),
+    va ghi nhan ket qua vao MLflow.
     """
-
-    # TODO 1: Doc du lieu huan luyen va danh gia
+    # 1. Doc du lieu huan luyen va danh gia
     df_train = pd.read_csv(data_path)
     df_eval = pd.read_csv(eval_path)
 
-    # TODO 2: Tach dac trung (X) va nhan (y)
+    # 2. Tach dac trung (X) va nhan (y)
     X_train = df_train.drop(columns=["target"])
     y_train = df_train["target"]
     X_eval = df_eval.drop(columns=["target"])
     y_eval = df_eval["target"]
 
+    # BONUS 5: Kiem tra lech lac phan phoi du lieu (Data Drift)
+    pos_ratio = float(y_train.mean())
+    drift_detected = abs(pos_ratio - BASELINE_POS_RATIO) > 0.05
+    if drift_detected:
+        print(f"[CANH BAO DRIFT] Ti le lop duong: {pos_ratio:.1%} lech >5% so voi tham chieu {BASELINE_POS_RATIO:.1%}!")
+    else:
+        print(f"[DATA CHECK OK] Ti le lop duong: {pos_ratio:.1%} (tham chieu: {BASELINE_POS_RATIO:.1%})")
+
+    # Dam bao MLflow tracking URI duoc thiet lap
     if not os.environ.get("MLFLOW_TRACKING_URI"):
         mlflow.set_tracking_uri("sqlite:///mlflow.db")
 
     with mlflow.start_run():
-        # TODO 3: Ghi nhan cac sieu tham so
+        # Log params va Data Drift metric
         mlflow.log_params(params)
+        mlflow.log_metric("pos_ratio", pos_ratio)
 
-        # TODO 4: Khoi tao va huan luyen GradientBoostingClassifier
+        # 3. Huan luyen mo hinh
         model = GradientBoostingClassifier(**params, random_state=42)
         model.fit(X_train, y_train)
 
-        # TODO 5: Du doan tren tap holdout va tinh chi so (lop duong target=1)
-        preds = model.predict(X_eval)
-        f1 = float(f1_score(y_eval, preds))
-        acc = float(accuracy_score(y_eval, preds))
+        # 4. Du doan xac suat tren tap holdout
+        probs = model.predict_proba(X_eval)[:, 1]
 
-        # TODO 6: Ghi nhan chi so vao MLflow
-        mlflow.log_metric("f1_score", f1)
-        mlflow.log_metric("accuracy", acc)
+        # BONUS 2: Quet nguong tu 0.1 den 0.9 (buoc 0.05) tim nguong toi uu F1
+        thresholds = np.arange(0.1, 0.91, 0.05)
+        best_threshold = 0.5
+        best_f1 = 0.0
+        for thresh in thresholds:
+            t_preds = (probs >= thresh).astype(int)
+            t_f1 = float(f1_score(y_eval, t_preds))
+            if t_f1 > best_f1:
+                best_f1 = t_f1
+                best_threshold = float(thresh)
+
+        # Danh gia tai nguong mac dinh 0.5 va nguong toi uu
+        default_preds = (probs >= 0.5).astype(int)
+        default_f1 = float(f1_score(y_eval, default_preds))
+        default_acc = float(accuracy_score(y_eval, default_preds))
+
+        opt_preds = (probs >= best_threshold).astype(int)
+        opt_acc = float(accuracy_score(y_eval, opt_preds))
+
+        print(f"F1 (nguong 0.5): {default_f1:.4f} | Accuracy: {default_acc:.4f}")
+        print(f"[BONUS 2] Nguong toi uu: {best_threshold:.2f} -> Best F1: {best_f1:.4f} | Accuracy: {opt_acc:.4f}")
+
+        # Ghi metric vao MLflow
+        mlflow.log_metric("f1_score", default_f1)
+        mlflow.log_metric("accuracy", default_acc)
+        mlflow.log_metric("best_threshold", best_threshold)
+        mlflow.log_metric("best_f1_score", best_f1)
         mlflow.sklearn.log_model(model, "model")
 
-        # TODO 7: In ket qua ra man hinh
-        print(f"F1: {f1:.4f} | Accuracy: {acc:.4f}")
+        # BONUS 3: Tao bao cao chi tiet Precision / Recall va Confusion Matrix
+        cm = confusion_matrix(y_eval, default_preds)
+        cls_report = classification_report(y_eval, default_preds, target_names=["<=50K (0)", ">50K (1)"])
 
-        # TODO 8: Luu metrics ra file outputs/report.json
         os.makedirs("outputs", exist_ok=True)
-        with open("outputs/report.json", "w") as f:
-            json.dump({"f1_score": f1, "accuracy": acc}, f, indent=2)
+        with open("outputs/detail.txt", "w", encoding="utf-8") as f:
+            f.write("=== BAO CAO CHI TIET (BONUS 3) ===\n\n")
+            f.write("--- CONFUSION MATRIX ---\n")
+            f.write(f"TN: {cm[0,0]} | FP: {cm[0,1]}\n")
+            f.write(f"FN: {cm[1,0]} | TP: {cm[1,1]}\n\n")
+            f.write("--- CLASSIFICATION REPORT ---\n")
+            f.write(cls_report)
+            f.write("\n--- THRESHOLD TUNING (BONUS 2) ---\n")
+            f.write(f"Default (0.5): F1={default_f1:.4f}, Acc={default_acc:.4f}\n")
+            f.write(f"Optimal ({best_threshold:.2f}): F1={best_f1:.4f}, Acc={opt_acc:.4f}\n")
 
-        # TODO 9: Luu mo hinh ra file models/model.joblib
+        # Luu report.json cho CI/CD
+        with open("outputs/report.json", "w") as f:
+            json.dump({
+                "f1_score": default_f1,
+                "accuracy": default_acc,
+                "best_threshold": best_threshold,
+                "best_f1_score": best_f1,
+                "pos_ratio": pos_ratio,
+                "drift_detected": drift_detected,
+            }, f, indent=2)
+
+        # Luu model
         os.makedirs("models", exist_ok=True)
         joblib.dump(model, "models/model.joblib")
 
-    # TODO 10: Tra ve f1
-    return f1
+    return default_f1
 
 
 if __name__ == "__main__":

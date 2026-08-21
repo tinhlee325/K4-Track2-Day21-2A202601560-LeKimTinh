@@ -48,3 +48,12 @@ Tập dữ liệu Adult có phân bố lớp mất cân bằng nghiêm trọng k
 | Bước 3 (thêm`train_batch2`) | 0.7354   | 0.8820   |
 
 **Nhận xét:** Khi bổ sung thêm 22.361 mẫu dữ liệu mới ở Bước 3 (tổng cộng 44.722 mẫu), điểm F1 tăng nhẹ từ 0.7149 lên 0.7354 và Accuracy tăng từ 0.8740 lên 0.8820. Do dữ liệu mới được phân chia từ cùng nguồn và cùng phân phối, sự cải thiện không quá đột biến nhưng việc bổ sung thêm mẫu giúp mô hình tổng quát hóa tốt hơn. Điều cốt lõi được chứng minh là toàn bộ quy trình MLOps đã vận hành hoàn toàn tự động: chỉ từ một commit cập nhật dữ liệu, pipeline CI/CD đã tự động kéo dữ liệu, huấn luyện lại, vượt qua Quality Gate và tái triển khai thành công lên máy chủ sản xuất.
+
+---
+
+## 5. Phần Bonus Đã Thực Hiện
+
+- [x] Bonus 2 - Điều chỉnh ngưỡng quyết định: Quét ngưỡng 0.1-0.9 (bước 0.05), tìm ngưỡng tối ưu cải thiện F1 và log lên MLflow + report.
+- [x] Bonus 3 - Báo cáo precision / recall tự động: Tự động tính ma trận nhầm lẫn & classification report xuất ra `outputs/detail.txt`.
+- [x] Bonus 4 - Hoàn trả về phiên bản trước: Tải report cũ từ S3 so sánh, tự động chặn release nếu F1 mô hình mới bị suy giảm.
+- [x] Bonus 5 - Cảnh báo lệch lạc dữ liệu: Tự động kiểm tra tỷ lệ lớp dương trong tập huấn luyện với ngưỡng lệch chuẩn $\pm 5\%$.

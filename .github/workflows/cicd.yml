@@ -88,7 +88,9 @@ jobs:
 
       - name: Train model
         env:
-          MLFLOW_TRACKING_URI: "sqlite:///mlflow.db"
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI || 'sqlite:///mlflow.db' }}
+          MLFLOW_TRACKING_USERNAME: ${{ secrets.DAGSHUB_USERNAME || '' }}
+          MLFLOW_TRACKING_PASSWORD: ${{ secrets.DAGSHUB_TOKEN || '' }}
           MLFLOW_ARTIFACT_ROOT: "./mlartifacts"
         run: python src/train.py
 
@@ -99,8 +101,8 @@ jobs:
           F1=$(python -c "import json; d=json.load(open('outputs/report.json')); print(d['f1_score'])")
           echo "f1=$F1" >> $GITHUB_OUTPUT
 
-      - name: Upload model to Cloud Storage
-        # TODO 5: Su dung cloud SDK de upload models/model.joblib len S3
+      - name: Upload model and report to Cloud Storage
+        # TODO 5 & BONUS 4: Upload model.joblib va report.json len S3
         run: |
           python - <<'PYEOF'
           import boto3
@@ -109,37 +111,86 @@ jobs:
           bucket_name = os.environ["ARTIFACT_BUCKET"]
           s3 = boto3.client("s3")
           s3.upload_file("models/model.joblib", bucket_name, "artifacts/current/model.joblib")
-          print("Uploaded model.joblib to S3 successfully.")
+          s3.upload_file("outputs/report.json", bucket_name, "artifacts/current/report.json")
+          print("Uploaded model.joblib and report.json to S3 successfully.")
           PYEOF
         env:
           ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
 
-      - name: Save report as artifact
+      - name: Save reports as artifacts
+        # BONUS 3: Luu ca report.json va detail.txt
         uses: actions/upload-artifact@v4
         with:
-          name: report
-          path: outputs/report.json
+          name: model-reports
+          path: |
+            outputs/report.json
+            outputs/detail.txt
 
 
   # ---------------------------------------------------------------------------
-  # JOB 3 - QUALITY GATE
-  # Kiem tra nguong chat luong (f1_score >= 0.65).
+  # JOB 3 - QUALITY GATE & BONUS 4 (ROLLBACK CHECK)
+  # Kiem tra nguong chat luong (f1_score >= 0.65) va so sanh voi model cu.
   # ---------------------------------------------------------------------------
   quality-gate:
     name: Quality Gate
     needs: train
     runs-on: ubuntu-latest
     steps:
-
-      - name: Check quality gate
-        # TODO 6: Doc f1 tu output cua job train.
+      - name: Authenticate to Cloud Storage
         run: |
           python - <<'PYEOF'
+          import os, json
+          creds_raw = os.environ.get("STORAGE_CREDENTIALS", "")
+          try:
+              creds = json.loads(creds_raw)
+              aws_key = creds.get("aws_access_key_id", "")
+              aws_secret = creds.get("aws_secret_access_key", "")
+              aws_region = creds.get("aws_region", "ap-southeast-1")
+          except Exception:
+              lines = [line.strip() for line in creds_raw.splitlines() if line.strip()]
+              aws_key = lines[0] if len(lines) > 0 else ""
+              aws_secret = lines[1] if len(lines) > 1 else ""
+              aws_region = "ap-southeast-1"
+
+          with open(os.environ["GITHUB_ENV"], "a") as f:
+              f.write(f"AWS_ACCESS_KEY_ID={aws_key}\n")
+              f.write(f"AWS_SECRET_ACCESS_KEY={aws_secret}\n")
+              f.write(f"AWS_DEFAULT_REGION={aws_region}\n")
+          PYEOF
+        env:
+          STORAGE_CREDENTIALS: ${{ secrets.STORAGE_CREDENTIALS }}
+
+      - name: Check quality gate and rollback condition
+        # TODO 6 & BONUS 4: Kiem tra F1 >= 0.65 va so sanh voi F1 cu tu S3
+        run: |
+          python - <<'PYEOF'
+          import os, json, boto3
+          from botocore.exceptions import ClientError
+
           f1 = float("${{ needs.train.outputs.f1 }}")
           if f1 < 0.65:
               raise SystemExit(f"FAILED: f1_score {f1:.4f} < 0.65. Huy trien khai.")
-          print(f"PASSED: f1_score {f1:.4f} >= 0.65. Dang trien khai model.")
+          print(f"PASSED Quality Gate: f1_score {f1:.4f} >= 0.65.")
+
+          # BONUS 4: Kiem tra khong bi thoai lui so voi model cu tren S3
+          bucket_name = os.environ["ARTIFACT_BUCKET"]
+          s3 = boto3.client("s3")
+          try:
+              s3.download_file(bucket_name, "artifacts/current/report.json", "/tmp/old_report.json")
+              with open("/tmp/old_report.json") as f:
+                  old_data = json.load(f)
+              old_f1 = float(old_data.get("f1_score", 0.0))
+              print(f"[BONUS 4] So sanh F1: Model moi ({f1:.4f}) vs Model cu ({old_f1:.4f})")
+              if f1 < old_f1 - 0.05:  # Cho phep sai so nho do lay mau
+                  raise SystemExit(f"FAILED (ROLLBACK): F1 moi ({f1:.4f}) bi sut giam dang ke so voi F1 cu ({old_f1:.4f}). Huy trien khai.")
+              print("PASSED Rollback Check: Model moi dat chat luong tuong duong hoac tot hon.")
+          except ClientError as e:
+              print("[BONUS 4] Khong tim thay model cu tren S3 hoac day la lan chay dau tien. Tiep tuc trien khai.")
+          except Exception as e:
+              print(f"[BONUS 4 Note] {e}. Tiep tuc trien khai.")
           PYEOF
+        env:
+          ARTIFACT_BUCKET: ${{ secrets.ARTIFACT_BUCKET }}
 
 
   # ---------------------------------------------------------------------------
